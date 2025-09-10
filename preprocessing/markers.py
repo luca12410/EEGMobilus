@@ -103,22 +103,29 @@ class MarkerStream:
 
 
 # -------- Helper per file OpenSignals (.txt) --------
-def read_opensignals_digital(path: str, wanted: List[str]) -> Tuple[np.ndarray, Dict[str,int], int]:
+def read_opensignals_digital(path: str, wanted: list[str]):
     """
     Estrae colonne digitali per nome da un .txt OpenSignals.
-    Ritorna: (digital_matrix [cols, T], col_map, fs)
+    Ritorna: (digital_matrix [cols, T], col_map: dict name->idx, fs: int)
     """
+    import json
+    import numpy as np
+
+    # --- leggi header con readline() (no for ... in f) ---
     header_lines = []
     data_start_pos = 0
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        pos = 0
-        for line in f:
+        while True:
+            pos = f.tell()            # posizione PRIMA della riga
+            line = f.readline()
+            if not line:              # EOF
+                break
             if not line.startswith("#"):
-                data_start_pos = pos
+                data_start_pos = pos  # inizio dei dati
                 break
             header_lines.append(line.rstrip("\n"))
-            pos = f.tell()
 
+    # --- parse header JSON OpenSignals ---
     header_json = None
     for h in header_lines:
         if h.lstrip().startswith("# {"):
@@ -132,14 +139,25 @@ def read_opensignals_digital(path: str, wanted: List[str]) -> Tuple[np.ndarray, 
     fs = int(meta.get("sampling rate", 500))
     col_names = meta.get("column", [])
     name_to_idx = {name: i for i, name in enumerate(col_names)}
-    idxs = [name_to_idx[n] for n in wanted]
 
-    # carica dati
+    try:
+        idxs = [name_to_idx[n] for n in wanted]
+    except KeyError as e:
+        missing = [n for n in wanted if n not in name_to_idx]
+        raise KeyError(f"Colonne richieste non trovate nel file: {missing}. "
+                       f"Presenti: {list(name_to_idx.keys())}") from e
+
+    # --- carica solo la parte dati, partendo da data_start_pos ---
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         f.seek(data_start_pos)
+        # genfromtxt è più tollerante a righe irregolari di loadtxt
         data = np.genfromtxt(f, delimiter="\t", dtype=np.float32, autostrip=True)
+
     if data.ndim == 1:
         data = data[None, :]
-    # estrai e trasponi a [cols, T]
+
+    # Estrai colonne richieste e trasponi a [cols, T]
+    # (le colonne digitali O1/O2 sono 0/1 o valori piccoli)
     digital = data[:, idxs].T
-    return digital, {n: i for i, n in enumerate(wanted)}, fs
+    col_map = {n: i for i, n in enumerate(wanted)}
+    return digital, col_map, fs

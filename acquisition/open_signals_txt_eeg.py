@@ -1,150 +1,113 @@
-import json
-import re
+# acquisition/open_signals_txt_eeg.py
+from __future__ import annotations
 import numpy as np
-from typing import List, Union, Optional
-from queue import Empty
-from acquisition import Acquisition  # stessa ABC della live
+from .acquisition import Acquisition
 
 class OpenSignalsTxtEEG(Acquisition):
     """
-    Sorgente EEG offline da file .txt OpenSignals (BITalino).
-    Mantiene la stessa API della live:
-      - read_block(n) -> np.ndarray [C, n]
-      - stream(hop)
+    Loader/streamer per file OpenSignals .txt
+    Espone: read_block(n) -> [C,n], stream(hop) -> generator [C,hop]
     """
-
-    def __init__(
-        self,
-        path: str,
-        channels: Union[List[str], List[int]] = ("A1","A2","A3"),  # es. C3,Cz,C4
-        volts_per_count: float = 1.0,
-        fs: Optional[int] = None,   # se None, prova a leggere dall'header
-    ):
+    def __init__(self, path: str, channels=("A4",), fs: int | None = None, volts_per_count: float = 1.0):
         self.path = path
-        self.requested = list(channels)
+        self.channels = list(channels)
+        self.fs = fs                      # <- semplice attributo, NESSUNA property
         self.vpc = float(volts_per_count)
-        self._fs = fs
-        self._X = None     # [C_all, T] (solo le colonne richieste)
-        self._idx = 0      # cursore per read_block/stream
-        self.meta = {}     # info header utili
+
+        # interni
+        self._X = None                    # [C, T]
+        self._pos = 0
+        self._eof = False
 
         self._load_file()
 
-    @property
-    def fs(self) -> int:
-        return self._fs
+    # --- lifecycle (compat no-op) ---
+    def connect(self): ...
+    def start(self): ...
+    def stop(self): ...
 
+    # --- core ---
     def _load_file(self):
-        # --- 1) leggi header (righe che iniziano con '#')
+        import json
+
         header_lines = []
         data_start_pos = 0
+        # Windows-safe: niente iteratore; readline() + tell()/seek()
         with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
-            pos = 0
-            for line in f:
+            while True:
+                pos = f.tell()
+                line = f.readline()
+                if not line:
+                    break
                 if not line.startswith("#"):
-                    # prima riga di dati
                     data_start_pos = pos
                     break
                 header_lines.append(line.rstrip("\n"))
-                pos = f.tell()
 
-        # estrai il JSON dell’header (riga che inizia con '# {')
         header_json = None
         for h in header_lines:
             if h.lstrip().startswith("# {"):
-                try:
-                    header_json = json.loads(h.lstrip()[2:].strip())
-                except Exception:
-                    pass
+                header_json = json.loads(h.lstrip()[2:].strip())
                 break
+        if not header_json:
+            raise ValueError("Header JSON OpenSignals non trovato")
 
-        if header_json:
-            # Il JSON ha come chiave il MAC → prendi il primo oggetto
-            dev_key = next(iter(header_json))
-            meta = header_json[dev_key]
-            self.meta = meta
-            # sampling rate
-            if self._fs is None:
-                sr = meta.get("sampling rate", None)
-                if isinstance(sr, int):
-                    self._fs = sr
-        if self._fs is None:
-            # fallback sicuro
-            self._fs = 500
+        dev_key = next(iter(header_json))
+        meta = header_json[dev_key]
+        fs_file = int(meta.get("sampling rate", 500))
+        col_names = meta.get("column", [])
+        name_to_idx = {name: i for i, name in enumerate(col_names)}
 
-        # --- 2) individua indici colonne richieste
-        # Esempio header["column"] = ["nSeq","I1","I2","O1","O2","A1","A2","A3","A4","A5","A6"]
-        col_names = []
-        if header_json:
-            dev_key = next(iter(header_json))
-            col_names = header_json[dev_key].get("column", []) or []
+        # mappa canali richiesti
+        try:
+            idxs = [name_to_idx[n] for n in self.channels]
+        except KeyError as e:
+            missing = [n for n in self.channels if n not in name_to_idx]
+            raise KeyError(f"Colonne richieste non trovate: {missing}. Presenti: {list(name_to_idx.keys())}") from e
 
-        # mapping: se l'utente ha passato nomi ("A1","A2","A3"), converti in indici;
-        # se ha passato indici, prendili così come sono.
-        if col_names and isinstance(self.requested[0], str):
-            name_to_idx = {name: i for i, name in enumerate(col_names)}
-            try:
-                col_idx = [name_to_idx[name] for name in self.requested]
-            except KeyError as e:
-                raise ValueError(f"Canale non presente nel file: {e}")
-        else:
-            col_idx = list(map(int, self.requested))
-
-        # --- 3) carica i dati numerici (dalla prima riga non-commento)
-        # Il separatore è TAB; alcune righe hanno TAB finali → usa genfromtxt robusto
+        # carica dati
         with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
             f.seek(data_start_pos)
-            data = np.genfromtxt(
-                f,
-                delimiter="\t",
-                dtype=np.float32,
-                autostrip=True
-            )
+            data = np.genfromtxt(f, delimiter="\t", dtype=np.float32, autostrip=True)
+
         if data.ndim == 1:
-            data = data[None, :]  # 1 sola riga
+            data = data[None, :]
 
-        # --- 4) estrai solo le colonne richieste e trasponi in [C, T]
-        # NB: data ha shape [T, cols]
-        try:
-            X = data[:, col_idx].T  # [C, T]
-        except Exception as e:
-            raise ValueError(f"Indice colonne non valido: {e}")
+        X = data[:, idxs].T.astype(np.float32) * self.vpc  # [C,T]
 
-        # --- 5) converti in µV (o scala desiderata) se necessario
-        X = X.astype(np.float32) * self.vpc
+        # imposta fs se assente (NOTA: nessuna property, solo attributo)
+        if self.fs is None:
+            self.fs = fs_file
 
-        # --- 6) salva in memoria e reset cursore
         self._X = X
-        self._idx = 0
+        self._pos = 0
+        self._eof = False
 
     # --- consumer API ---
     def read_block(self, n: int, timeout: float = 1.0) -> np.ndarray:
-        """
-        Ritorna [C, n] dal file, avanzando il cursore.
-        Se finiti i dati, solleva queue.Empty per coerenza con la live.
-        """
-        end = min(self._idx + n, self._X.shape[1])
-        if end <= self._idx:
-            raise Empty
-        blk = self._X[:, self._idx:end]
-        self._idx = end
-        # pad (raro): se vuoi garantire sempre n campioni
-        if blk.shape[1] < n:
-            # qui preferisco sollevare Empty per segnalare EOF
-            raise Empty
-        return blk
+        if self._eof:
+            from queue import Empty
+            raise Empty  # per compat con run_inference_stream
+        end = self._pos + n
+        if end >= self._X.shape[1]:
+            end = self._X.shape[1]
+            self._eof = True
+        chunk = self._X[:, self._pos:end]
+        self._pos = end
+        # se chunk più corto, pad con ultimi valori (o zeri)
+        if chunk.shape[1] < n:
+            pad = np.zeros((chunk.shape[0], n - chunk.shape[1]), dtype=chunk.dtype)
+            if chunk.shape[1] > 0:
+                pad[:] = chunk[:, -1][:, None]
+            chunk = np.concatenate([chunk, pad], axis=1)
+        return chunk
 
     def stream(self, hop: int, timeout: float = 1.0):
-        """Generatore di blocchi [C, hop] fino a EOF."""
+        from queue import Empty
         while True:
             try:
                 yield self.read_block(hop, timeout=timeout)
+                if self._eof:
+                    break
             except Empty:
                 break
-
-    # per simmetria con la live (no-op)
-    def connect(self): pass
-    def start(self): pass
-    def stop(self): pass
-    def __enter__(self): return self
-    def __exit__(self, exc_type, exc, tb): pass

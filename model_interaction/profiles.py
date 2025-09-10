@@ -6,7 +6,7 @@ from typing import Optional, Dict, Tuple, Union
 from tensorflow.keras.models import load_model as tf_load_model
 
 INDEX_FILE = "profiles_index.json"   # file { "nome": "profiles/nome", ... }
-DEFAULT_ROOT = "profiles"            # cartella dove creare i profili
+DEFAULT_ROOT = "profile_store"            # cartella dove creare i profili
 
 # ---------- Meta ----------
 @dataclass

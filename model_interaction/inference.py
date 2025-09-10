@@ -4,7 +4,7 @@ import numpy as np
 from collections import deque
 from typing import Callable, Optional
 
-from profiles import load_profile
+from model_interaction.profiles import load_profile
 from preprocessing.preprocess import prepare_for_model  # deve fare: preprocess + reshape (1,C,S,1)
 
 class InferenceEngine:
@@ -82,3 +82,69 @@ def run_inference_stream(
         probs = engine.predict_window(X_win)  # np.array [n_classes]
         if on_probs:
             on_probs(probs, (time.time() - t0) * 1000.0)
+
+
+def _ask(prompt: str, default: str) -> str:
+    s = input(f"{prompt} [{default}]: ").strip()
+    return s if s else default
+
+def run_inference_interactive(default_profile_dir: str = "profiles/latest",
+                              default_mode: str = "file",
+                              test_file: str = "model_interaction/files/campione090824_test.txt",
+                              analog_channels = ("A4",),
+                              win_sec: float = 1.0,
+                              hop_sec: float = 0.5):
+    """
+    Orchestrazione INTERATTIVA dell'inferenza.
+    Chiede QUALE PROFILO usare e se inferire da FILE (A4) o LIVE.
+    """
+    import os
+    import numpy as np
+    from acquisition.open_signals_txt_eeg import OpenSignalsTxtEEG
+    from acquisition.EEG_live_acquisition import LiveSource
+    from robot_control.decision import DecisionSmoother, map_class_to_cmd
+
+    profile_dir = _ask("Path del profilo da usare (directory)", default_profile_dir)
+    if not os.path.isdir(profile_dir):
+        print(f"[!] Profilo non trovato: {profile_dir}")
+        raise SystemExit(1)
+
+    mode = _ask("Sorgente inferenza (file/live)", default_mode).lower()
+    engine = InferenceEngine(profile_dir)
+    smoother = DecisionSmoother(win=3, thr=0.6, refractory_ms=300)
+
+    if mode.startswith("l"):
+        print("[*] Inferenza LIVE dal dispositivo…")
+        fs = engine.meta["fs"]
+        src = LiveSource(fs)
+
+        def on_probs(p, t_ms):
+            cls_idx = smoother.step(p, t_ms)
+            if cls_idx is not None:
+                label = engine.meta["classes"][cls_idx]
+                cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
+                print(f"{t_ms:8.1f} ms | probs={np.round(p,3)} | label={label} | cmd={cmd}")
+
+        run_inference_stream(src, engine, fs=fs, win_sec=win_sec, hop_sec=hop_sec, on_probs=on_probs)
+    else:
+        print("[*] Inferenza su FILE OpenSignals (solo analogico, nessun marker)…")
+        if not os.path.exists(test_file):
+            print(f"[!] TEST_FILE non trovato: {test_file}")
+            raise SystemExit(1)
+
+        src = OpenSignalsTxtEEG(test_file, channels=list(analog_channels))
+
+        def on_probs(p, t_ms):
+            cls_idx = smoother.step(p, t_ms)
+            if cls_idx is not None:
+                label = engine.meta["classes"][cls_idx]
+                cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
+                print(f"{t_ms:8.1f} ms | probs={np.round(p,3)} | label={label} | cmd={cmd}")
+
+        run_inference_stream(src, engine,
+                             fs=engine.meta["fs"],
+                             win_sec=win_sec,
+                             hop_sec=hop_sec,
+                             on_probs=on_probs)
+
+    print("[✓] Inference finita.")
