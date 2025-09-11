@@ -1,0 +1,7 @@
+numpy
+scipy
+scikit-learn
+tensorflow
+bitalino==1.2.6
+pyserial==3.5
+PyBluez-bitalino==0.30
