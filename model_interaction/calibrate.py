@@ -181,7 +181,11 @@ def calibrate_guided_live(
     n = X_keras.shape[0]
     idx = np.arange(n); np.random.shuffle(idx)
     cut = max(1, int(0.8*n))
-    tr, va = idx[:cut], idx[cut:] if cut < n else idx[:1], idx[:1]
+    if n < 2:
+        tr = va = idx[:1]
+    else:
+        tr = idx[:cut]
+        va = idx[cut:] if cut < n else idx[:1]
     model.fit(X_keras[tr], y_cat[tr],
               validation_data=(X_keras[va], y_cat[va]),
               epochs=epochs, batch_size=batch_size, verbose=1,
