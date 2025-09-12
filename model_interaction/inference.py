@@ -3,9 +3,11 @@ import time
 import numpy as np
 from collections import deque
 from typing import Callable, Optional
+from preprocessing.windowing import RingBuffer
 
 from model_interaction.profiles import load_profile
 from preprocessing.preprocess import prepare_for_model  # deve fare: preprocess + reshape (1,C,S,1)
+from base_model.classic import classic_predict_window
 
 import os, logging
 
@@ -83,50 +85,72 @@ class RingBuffer:
 
 def run_inference_stream(
     source,                 # deve esporre .stream(hop) che yielda blocchi [C, hop]
-    engine: InferenceEngine,
+    engine,                 # InferenceEngine
     fs: int,
     win_sec: float = 1.0,
     hop_sec: float = 0.5,
     on_probs: Optional[Callable[[np.ndarray, float], None]] = None,  # callback(probs, t_ms)
+    profile_dir: Optional[str] = None,   # <<< AGGIUNTO
+    DEBUG: bool = False
 ):
     """
     Collante live/offline: prende blocchi dal 'source', compone finestre e invia a 'engine'.
+    Se 'profile_dir' contiene meta_classic.json, usa il modello classico; altrimenti EEGNet.
     """
-    
-    hop_sec = max(hop_sec, win_sec / 4)
-    
-    win = int(round(fs * win_sec))
-    hop = int(round(fs * hop_sec))
-    rb  = RingBuffer(chans=engine.meta["chans"], win_samples=win)
+    if profile_dir is None:
+        # se l'engine ha un attributo con il path, usalo; altrimenti resta None e userà EEGNet
+        profile_dir = getattr(engine, "profile_dir", None)
 
+    # parametri finestra/hop in *campioni*
+    fs = int(fs)
+    win = int(round(fs * win_sec))
+    hop = max(1, int(round(fs * max(hop_sec, win_sec / 4))))  # hop minimo = win/4
+
+    rb  = RingBuffer(chans=engine.meta["chans"], win_samples=win)
     t0 = time.time()
+
     if DEBUG:
-        log.debug(f"Running inference stream with win={win} samples ({win_sec:.3f} s), hop={hop} samples ({hop_sec:.3f} s)")
-    for block in source.stream(hop):          # block: [C, hop]
-        if block.size == 0:
-            continue
+        print(f"[dbg] run_inference_stream: fs={fs}  win={win} samp ({win_sec:.3f}s)  hop={hop} samp ({hop_sec:.3f}s)")
+        print(f"[dbg] classes={engine.meta.get('classes')}")
+
+    # decide quale modello usare
+    use_classic = False
+    if profile_dir is not None:
+        use_classic = os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
         if DEBUG:
-            log.debug(f"Stream block: shape={getattr(block, 'shape', None)}, len={block.shape[-1] if hasattr(block, 'shape') else None} ")
+            print(f"[dbg] profile_dir={profile_dir}  use_classic={use_classic}")
+
+    for block in source.stream(hop):   # block: [C, hop]
+        if block is None or (hasattr(block, "size") and block.size == 0):
+            continue
+
+        if DEBUG:
+            print(f"[dbg] block: shape={getattr(block,'shape',None)}")
+
         rb.push(block)
-        X_win = rb.get_window()               # [C, win] oppure None
-        
+        X_win = rb.get_window()        # [C, win] oppure None
+
         if X_win is None:
             if DEBUG:
-                log.debug("Waiting for window...")
-                continue
-        if DEBUG:
-            log.debug(f"Got window: shape={X_win.shape}")  
-        
-        if X_win is None:
+                print("[dbg] waiting window…")
             continue
-        try:
-            probs = engine.predict_window(X_win)  # np.array [n_classes]
-        except Exception as e:
-            log.error(f"Error during prediction: {e}")
-            continue
-        if on_probs:
-            on_probs(probs, (time.time() - t0) * 1000.0)
 
+        if DEBUG:
+            print(f"[dbg] window ready: {X_win.shape}")
+
+        try:
+            if use_classic:
+                probs, _classes = classic_predict_window(profile_dir, X_win)
+            else:
+                probs = engine.predict_window(X_win)  # np.array [n_classes]
+        except Exception as e:
+            if DEBUG:
+                import traceback; traceback.print_exc()
+                print(f"[dbg] predict error: {e}")
+            continue
+
+        if on_probs is not None:
+            on_probs(probs, (time.time() - t0) * 1000.0)
 
 def _ask(prompt: str, default: str) -> str:
     s = input(f"{prompt} [{default}]: ").strip()

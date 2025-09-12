@@ -10,6 +10,8 @@ from preprocessing.preprocess import preprocess_pipeline
 from model_interaction.profiles import save_profile, ProfileMeta
 from preprocessing.markers import MarkerStream, read_opensignals_digital
 from acquisition.open_signals_txt_eeg import OpenSignalsTxtEEG
+from model_interaction.base_model.classic import train_and_save_classic_profile
+
 
 def _windows_from_trials(X_raw: np.ndarray,
                          trials: List[Tuple[int,int,str]],
@@ -95,6 +97,9 @@ def calibrate_from_txt(
     model.fit(X_keras[tr], y_cat[tr],
               validation_data=(X_keras[va], y_cat[va]),
               epochs=epochs, batch_size=batch_size, verbose=1, callbacks=callbacks)
+    
+    train_and_save_classic_profile(profile_path, X, y, fs, classes)
+    print("[cal] Baseline classica (SVM+RF) salvata in meta_classic.json + classic_model.joblib")
 
     # 7) meta + salvataggio profilo
     meta = ProfileMeta(
@@ -102,6 +107,7 @@ def calibrate_from_txt(
         classes=list(classes), band=band, notch=notch, notes=f"Calibrated from {os.path.basename(txt_path)}"
     )
     profile_path = save_profile(subject_name, model, meta, scaler=None)
+
     # salva anche i marker per tracciabilità (facoltativo)
     with open(os.path.join(profile_path, "markers.json"), "w", encoding="utf-8") as f:
         json.dump({"trials": trials}, f, indent=2)
