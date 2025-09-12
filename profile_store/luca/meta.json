@@ -1,0 +1,16 @@
+{
+  "fs": 100,
+  "chans": 1,
+  "samples": 100,
+  "classes": [
+    "stare",
+    "blink",
+    "movement"
+  ],
+  "band": [
+    8,
+    30
+  ],
+  "notch": 50.0,
+  "notes": "Calibrated LIVE (no markers)"
+}
