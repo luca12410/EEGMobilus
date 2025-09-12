@@ -4,6 +4,12 @@ from queue import Queue, Empty
 from bitalino import BITalino
 from .acquisition import Acquisition
 
+import os, logging
+
+DEBUG = os.getenv("EEG_DEBUG", "0") == "1"
+logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format='[%(levelname)s] %(message)s')
+log = logging.getLogger(__name__)
+
 class EEGLiveAcquisition(Acquisition):
     """
     Sorgente EEG live da BITalino (pull-based + thread producer).
@@ -149,6 +155,8 @@ class LiveSource:
         self._live = _get_live(fs=fs, channels=channels, mac=mac)
 
     def stream(self, hop: int, timeout: float = 1.0):
+        if DEBUG:
+            log.debug(f"LiveSource stream called with hop={hop}, timeout={timeout}")
         yield from self._live.stream(hop, timeout=timeout)
 
     def __del__(self):

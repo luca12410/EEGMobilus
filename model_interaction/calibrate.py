@@ -236,6 +236,7 @@ def run_calibration_interactive(subject_name: str = "test_subject", fs_default: 
     epochs      = _ask_int("Epoch di training", 5)
     batch_size  = _ask_int("Batch size", 64)
     win_sec     = _ask_float("Finestra feature (s)", win_sec_default)
+    subject_name = _ask("Nome soggetto (usato per salvare il profilo)", subject_name)
 
     print("\nRiepilogo calibrazione:")
     print("  Classi:", labels)

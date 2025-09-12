@@ -1,5 +1,10 @@
 import numpy as np
 from scipy.signal import butter, lfilter
+import os, logging
+
+DEBUG = os.getenv("EEG_DEBUG", "0") == "1"
+logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format='[%(levelname)s] %(message)s')
+log = logging.getLogger(__name__)
 
 def bandpass_filter(data: np.ndarray, fs: int, low: float=1.0, high: float=40.0, order: int=5):
     """Filtro passa-banda canale per canale [C, N]."""
