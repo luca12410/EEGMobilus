@@ -21,7 +21,7 @@ def _butter_band(x, fs, lo, hi, order=4):
     b, a = butter(order, [lo/(fs/2), hi/(fs/2)], btype='band', analog=False)
     return filtfilt(b, a, x, axis=-1)
 
-def _log_bandpower(x, fs, bands=((1,4), (4,8), (8,12), (12,30))):
+def _log_bandpower(x, fs, bands=((0.5,4),(4,8),(8,12))):
     """
     x: [N, C, S] o [C, S] con C=1. Ritorna [N, F] (F=len(bands)) o [F].
     """
@@ -167,10 +167,33 @@ def train_and_save_classic_profile(profile_dir, X_win, y, fs, classes):
     return profile_dir
 
 def classic_predict_window(profile_dir, X_win):
-    """
-    Carica al volo e predice su una singola finestra [1,S] o [C=1,S].
-    Ritorna: probs [K], meta.classes
-    """
-    model = ClassicModel.load(profile_dir)
-    probs = model.predict_window(X_win)
-    return probs, model.meta.classes
+    import json, os, numpy as np
+    from joblib import load
+    from preprocessing.preprocess import preprocess_pipeline  # <<< importa il tuo preprocess
+
+    # meta classico
+    meta_c = json.load(open(os.path.join(profile_dir, "meta_classic.json"), "r"))
+    fs = meta_c["fs"]; samples = meta_c["samples"]
+    assert X_win.shape[-1] == samples
+
+    # carica modello
+    clf = load(os.path.join(profile_dir, meta_c["model_file"]))
+
+    # --- PREPROCESS come in calibrazione ---
+    # shape attesa dal preprocess: [C, T]
+    Xp = preprocess_pipeline(np.asarray(X_win), fs)   # <<< PASSO CRITICO
+
+    # estrai le stesse feature usate in training
+    Xf = extract_features(Xp[None, :, :], fs, add_rms=True)  # [1,F]
+
+    probs = clf.predict_proba(Xf)[0]
+    
+    z = (Xp[0]-Xp[0].mean())/(Xp[0].std()+1e-8)
+    zpk = float(np.max(np.abs(z)))
+    if "blink" in meta_c["classes"]:
+        b = meta_c["classes"].index("blink")
+        if zpk < 3.0:           # stessa soglia del training
+            probs[b] *= 0.1
+            probs = probs / probs.sum()
+    
+    return probs, meta_c["classes"]

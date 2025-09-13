@@ -7,7 +7,7 @@ from preprocessing.windowing import RingBuffer
 
 from model_interaction.profiles import load_profile
 from preprocessing.preprocess import prepare_for_model  # deve fare: preprocess + reshape (1,C,S,1)
-from base_model.classic import classic_predict_window
+from model_interaction.base_model.classic import classic_predict_window
 
 import os, logging
 
@@ -21,14 +21,14 @@ class InferenceEngine:
     """
     def __init__(self, profile_dir: str):
         self.model, self.scaler, self.meta = load_profile(profile_dir)
-        # chiavi minime attese nel meta
+        self.profile_dir = profile_dir   # <<< AGGIUNTO
         for k in ("fs", "chans", "samples", "classes"):
             if k not in self.meta:
                 raise KeyError(f"Missing meta key: {k}")
         if DEBUG:
-            log.debug(f"Loaded profile from {profile_dir}: \n")
-            log.debug(f"  fs={self.meta['fs']} Hz, chans={self.meta['chans']}, samples={self.meta['samples']} \n")
-            log.debug(f"  classes={self.meta['classes']} \n")
+            log.debug(f"Loaded profile from {profile_dir}: ")
+            log.debug(f"  fs={self.meta['fs']} Hz, chans={self.meta['chans']}, samples={self.meta['samples']}")
+            log.debug(f"  classes={self.meta['classes']}")
 
     def predict_window(self, X_win: np.ndarray) -> np.ndarray:
         """
@@ -84,88 +84,69 @@ class RingBuffer:
 
 
 def run_inference_stream(
-    source,                 # deve esporre .stream(hop) che yielda blocchi [C, hop]
+    source,                 # .stream(hop) -> blocchi [C, hop]
     engine,                 # InferenceEngine
     fs: int,
     win_sec: float = 1.0,
     hop_sec: float = 0.5,
-    on_probs: Optional[Callable[[np.ndarray, float], None]] = None,  # callback(probs, t_ms)
-    profile_dir: Optional[str] = None,   # <<< AGGIUNTO
+    on_probs: Optional[Callable[[np.ndarray, float], None]] = None,
+    profile_dir: Optional[str] = None,
     DEBUG: bool = False
 ):
-    """
-    Collante live/offline: prende blocchi dal 'source', compone finestre e invia a 'engine'.
-    Se 'profile_dir' contiene meta_classic.json, usa il modello classico; altrimenti EEGNet.
-    """
     if profile_dir is None:
-        # se l'engine ha un attributo con il path, usalo; altrimenti resta None e userà EEGNet
         profile_dir = getattr(engine, "profile_dir", None)
 
-    # parametri finestra/hop in *campioni*
     fs = int(fs)
     win = int(round(fs * win_sec))
-    hop = max(1, int(round(fs * max(hop_sec, win_sec / 4))))  # hop minimo = win/4
+    hop = max(1, int(round(fs * max(hop_sec, win_sec / 4))))
 
     rb  = RingBuffer(chans=engine.meta["chans"], win_samples=win)
     t0 = time.time()
-
     if DEBUG:
-        print(f"[dbg] run_inference_stream: fs={fs}  win={win} samp ({win_sec:.3f}s)  hop={hop} samp ({hop_sec:.3f}s)")
-        print(f"[dbg] classes={engine.meta.get('classes')}")
+        print(f"[dbg] fs={fs} win={win}({win_sec:.3f}s) hop={hop}({hop_sec:.3f}s) classes={engine.meta.get('classes')}")
 
-    # decide quale modello usare
-    use_classic = False
-    if profile_dir is not None:
-        use_classic = os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
-        if DEBUG:
-            print(f"[dbg] profile_dir={profile_dir}  use_classic={use_classic}")
+    use_classic = bool(profile_dir) and os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
+    if DEBUG and profile_dir:
+        print(f"[dbg] profile_dir={profile_dir} use_classic={use_classic}")
 
-    for block in source.stream(hop):   # block: [C, hop]
+    for block in source.stream(hop):
         if block is None or (hasattr(block, "size") and block.size == 0):
             continue
-
         if DEBUG:
-            print(f"[dbg] block: shape={getattr(block,'shape',None)}")
+            print(f"[dbg] block: {getattr(block,'shape',None)}")
 
         rb.push(block)
-        X_win = rb.get_window()        # [C, win] oppure None
-
+        X_win = rb.get_window()
         if X_win is None:
-            if DEBUG:
-                print("[dbg] waiting window…")
+            if DEBUG: print("[dbg] waiting window…")
             continue
-
         if DEBUG:
             print(f"[dbg] window ready: {X_win.shape}")
 
         try:
             if use_classic:
-                probs, _classes = classic_predict_window(profile_dir, X_win)
+                probs, _ = classic_predict_window(profile_dir, X_win)
             else:
-                probs = engine.predict_window(X_win)  # np.array [n_classes]
+                probs = engine.predict_window(X_win)
         except Exception as e:
             if DEBUG:
                 import traceback; traceback.print_exc()
                 print(f"[dbg] predict error: {e}")
             continue
 
-        if on_probs is not None:
+        if on_probs:
             on_probs(probs, (time.time() - t0) * 1000.0)
 
 def _ask(prompt: str, default: str) -> str:
     s = input(f"{prompt} [{default}]: ").strip()
     return s if s else default
 
-def run_inference_interactive(default_profile_dir: str = "profiles/latest",
+def run_inference_interactive(default_profile_dir: str = "profile_store/latest",
                               default_mode: str = "file",
                               test_file: str = "model_interaction/files/campione090824_test.txt",
                               analog_channels = ("A4",),
                               win_sec: float = 1.0,
                               hop_sec: float = 0.5):
-    """
-    Orchestrazione INTERATTIVA dell'inferenza.
-    Chiede QUALE PROFILO usare e se inferire da FILE (A4) o LIVE.
-    """
     import os
     import numpy as np
     from acquisition.open_signals_txt_eeg import OpenSignalsTxtEEG
@@ -181,42 +162,46 @@ def run_inference_interactive(default_profile_dir: str = "profiles/latest",
     engine = InferenceEngine(profile_dir)
     smoother = DecisionSmoother(win=3, thr=0.4, refractory_ms=100)
 
+    # finestra coerente col profilo
+    fs = engine.meta["fs"]
+    win_sec = engine.meta["samples"] / fs
+    hop_sec = max(0.05, win_sec / 4)
+
+    use_classic = bool(profile_dir) and os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
+    if DEBUG:
+        print(f"[dbg] use_classic={use_classic}  classes={engine.meta.get('classes')}")
+    
+    def on_probs(p, t_ms):
+        print(f"[raw] {t_ms:8.1f} ms | probs={np.round(p,3)}")
+        cls_idx = smoother.step(p, t_ms)
+        if cls_idx is not None:
+            label = engine.meta["classes"][cls_idx]
+            cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
+            print(f"[dec] {t_ms:8.1f} ms | label={label} | cmd={cmd}")
+        elif DEBUG:
+            print(f"[dec] {t_ms:8.1f} ms | nessuna classe (sotto soglia)")
+
     if mode.startswith("l"):
         print("[*] Inferenza LIVE dal dispositivo…")
-        fs = engine.meta["fs"]
         src = LiveSource(fs)
-
-        def on_probs(p, t_ms):
-            print(f"[raw] {t_ms:8.1f} ms | probs={np.round(p,3)}", end="")
-            cls_idx = smoother.step(p, t_ms)
-            if cls_idx is not None:
-                label = engine.meta["classes"][cls_idx]
-                cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
-                print(f"{t_ms:8.1f} ms | probs={np.round(p,3)} | label={label} | cmd={cmd}")
-            else:
-                if DEBUG:
-                    print("[dec] {t_ms:8.1f} ms | nessuna classe trovata")
-
-        run_inference_stream(src, engine, fs=fs, win_sec=win_sec, hop_sec=hop_sec, on_probs=on_probs)
+        run_inference_stream(
+            src, engine,
+            fs=fs, win_sec=win_sec, hop_sec=hop_sec,
+            on_probs=on_probs,
+            profile_dir=profile_dir,         # <<< IMPORTANTE
+            DEBUG=DEBUG
+        )
     else:
         print("[*] Inferenza su FILE OpenSignals (solo analogico, nessun marker)…")
         if not os.path.exists(test_file):
             print(f"[!] TEST_FILE non trovato: {test_file}")
             raise SystemExit(1)
-
         src = OpenSignalsTxtEEG(test_file, channels=list(analog_channels))
-
-        def on_probs(p, t_ms):
-            cls_idx = smoother.step(p, t_ms)
-            if cls_idx is not None:
-                label = engine.meta["classes"][cls_idx]
-                cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
-                print(f"{t_ms:8.1f} ms | probs={np.round(p,3)} | label={label} | cmd={cmd}")
-
-        run_inference_stream(src, engine,
-                             fs=engine.meta["fs"],
-                             win_sec=win_sec,
-                             hop_sec=hop_sec,
-                             on_probs=on_probs)
-
+        run_inference_stream(
+            src, engine,
+            fs=fs, win_sec=win_sec, hop_sec=hop_sec,
+            on_probs=on_probs,
+            profile_dir=profile_dir,         # <<< IMPORTANTE
+            DEBUG=DEBUG
+        )
     print("[✓] Inference finita.")

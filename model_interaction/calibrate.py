@@ -16,25 +16,31 @@ from model_interaction.base_model.classic import train_and_save_classic_profile
 def _windows_from_trials(X_raw: np.ndarray,
                          trials: List[Tuple[int,int,str]],
                          classes: List[str],
-                         samples: int) -> Tuple[np.ndarray, np.ndarray]:
+                         samples: int,
+                         hop: int = None) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Crea dataset allineato alle finestre da training.
-    Ritorna X [N,C,S] e y int [N].
+    Crea finestre sovrapposte per ogni trial.
+    X_raw: [C,T], trials: [(t0,t1,label)], samples: ampiezza finestra (campioni)
+    hop: passo tra finestre (campioni), default = samples//4 (75% overlap)
+    Ritorna X [N,C,S] e y [N].
     """
     C, T = X_raw.shape
+    hop = hop or max(1, samples // 4)
     X_list, y_list = [], []
     for (t0, t1, lbl) in trials:
-        # prendi la porzione centrale di lunghezza 'samples'
-        if (t1 - t0) < samples:
+        L = t1 - t0
+        if L < samples:
             continue
-        start = t0 + ( (t1 - t0) - samples ) // 2
-        seg = X_raw[:, start:start+samples]   # [C,S]
-        X_list.append(seg)
-        y_list.append(classes.index(lbl))
+        start = t0
+        while start + samples <= t1:
+            seg = X_raw[:, start:start+samples]  # [C,S]
+            X_list.append(seg)
+            y_list.append(classes.index(lbl))
+            start += hop
     if not X_list:
-        raise RuntimeError("Nessuna finestra valida creata dai trials.")
+        raise RuntimeError("Nessuna finestra valida creata dai trials (controlla samples/hop).")
     X = np.stack(X_list, axis=0)   # [N,C,S]
-    y = np.array(y_list, dtype=int)
+    y = np.asarray(y_list, dtype=int)
     return X, y
 
 def calibrate_from_txt(
@@ -76,6 +82,32 @@ def calibrate_from_txt(
 
     # 4) dataset da trials → finestre [N,C,S] + y
     X, y = _windows_from_trials(X_filt, trials, list(classes), samples)
+    
+    # --- Re-label per BLINK: tieni positivi solo se la finestra contiene un picco EOG ---
+    if set(map(str.lower, classes)) == {"blink", "stare"}:
+        blink_idx = classes.index("blink")
+        stare_idx = classes.index("stare")
+
+        z = (X[:,0,:] - X[:,0,:].mean(axis=1, keepdims=True)) / (X[:,0,:].std(axis=1, keepdims=True) + 1e-8)
+        zpk = np.max(np.abs(z), axis=1)
+
+        z_thr = 3.0  # picco z-score per considerare la finestra "blink"
+        pos_mask = (y == blink_idx) & (zpk >= z_thr)
+        neg_mask = (y == stare_idx) | ((y == blink_idx) & (zpk < z_thr))  # i falsi "blink" diventano stare
+
+        X_pos = X[pos_mask];  y_pos = np.full(X_pos.shape[0], blink_idx, dtype=int)
+        X_neg = X[neg_mask];  y_neg = np.full(X_neg.shape[0], stare_idx, dtype=int)
+
+        # Bilancia (stesso numero per classe, senza leakage grossolano)
+        n = min(len(X_pos), len(X_neg))
+        if n < 20:
+            raise RuntimeError("Troppi pochi blink veri rilevati; rifare calibrazione con più blink o soglia più bassa.")
+
+        idxp = np.random.choice(len(X_pos), n, replace=False)
+        idxn = np.random.choice(len(X_neg), n, replace=False)
+        X = np.concatenate([X_pos[idxp], X_neg[idxn]], axis=0)
+        y = np.concatenate([y_pos[idxp], y_neg[idxn]], axis=0)
+    
     # reshape per Keras: [N,C,S,1]
     X_keras = X[..., None]
     y_cat = to_categorical(y, num_classes=len(classes))
@@ -85,11 +117,8 @@ def calibrate_from_txt(
     model = EEGNet(nb_classes=len(classes), Chans=chans, Samples=samples, kernLength=max(8, samples//2))
     model.compile(loss="categorical_crossentropy", optimizer="adam", metrics=["acc"])
 
-    # 6) training rapido
-    callbacks = [
-        EarlyStopping(monitor="val_acc", mode="max", patience=2, restore_best_weights=True),
-    ]
-    # split semplice 80/20
+     # 6) training rapido EEGNet
+    callbacks = [EarlyStopping(monitor="val_acc", mode="max", patience=2, restore_best_weights=True)]
     n = X_keras.shape[0]
     idx = np.arange(n); np.random.shuffle(idx)
     cut = int(0.8*n)
@@ -97,18 +126,21 @@ def calibrate_from_txt(
     model.fit(X_keras[tr], y_cat[tr],
               validation_data=(X_keras[va], y_cat[va]),
               epochs=epochs, batch_size=batch_size, verbose=1, callbacks=callbacks)
-    
-    train_and_save_classic_profile(profile_path, X, y, fs, classes)
-    print("[cal] Baseline classica (SVM+RF) salvata in meta_classic.json + classic_model.joblib")
 
-    # 7) meta + salvataggio profilo
+    # 7) meta + salvataggio profilo (crea la cartella profilo)
+    chans = X.shape[1]
     meta = ProfileMeta(
         fs=fs, chans=chans, samples=samples,
-        classes=list(classes), band=band, notch=notch, notes=f"Calibrated from {os.path.basename(txt_path)}"
+        classes=list(classes), band=band, notch=notch,
+        notes=f"Calibrated from {os.path.basename(txt_path)}"
     )
     profile_path = save_profile(subject_name, model, meta, scaler=None)
 
-    # salva anche i marker per tracciabilità (facoltativo)
+    # 8) ALLENA E SALVA anche SVM+RF nella stessa cartella
+    train_and_save_classic_profile(profile_path, X, y, fs, classes)
+    print("[cal] Baseline classica (SVM+RF) salvata in meta_classic.json + classic_model.joblib")
+
+    # 9) (opzionale) salva i marker
     with open(os.path.join(profile_path, "markers.json"), "w", encoding="utf-8") as f:
         json.dump({"trials": trials}, f, indent=2)
 
@@ -124,7 +156,7 @@ def calibrate_guided_live(
     chans=1,                          # numero di canali EEG che l'acquisitore fornisce
     trial_sec=3.0, rest_sec=2.0,      # durata cue attivo e riposo
     reps_per_label=8,
-    band=(8,30), notch=50.0,
+    band=(0.5,12), notch=50.0,
     win_sec=1.0,
     epochs:int=5, batch_size:int=64,
 ):
@@ -202,6 +234,10 @@ def calibrate_guided_live(
         classes=classes, band=band, notch=notch, notes="Calibrated LIVE (no markers)"
     )
     profile_path = save_profile(subject_name, model, meta, scaler=None)
+
+    # Aggiungi SVM+RF nella stessa cartella profilo
+    train_and_save_classic_profile(profile_path, X, y, fs, classes)
+    print("[cal-live] Baseline classica (SVM+RF) salvata in meta_classic.json + classic_model.joblib")
 
     with open(os.path.join(profile_path, "markers.json"), "w", encoding="utf-8") as f:
         json.dump({"trials": trials, "mode": "guided_live"}, f, indent=2)

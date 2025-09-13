@@ -3,121 +3,81 @@
     [
       0,
       300,
-      "stare"
+      "blink"
     ],
     [
       300,
       600,
-      "stare"
+      "blink"
     ],
     [
       600,
       900,
-      "stare"
+      "blink"
     ],
     [
       900,
       1200,
-      "stare"
+      "blink"
     ],
     [
       1200,
       1500,
-      "stare"
+      "blink"
     ],
     [
       1500,
       1800,
-      "stare"
+      "blink"
     ],
     [
       1800,
       2100,
-      "stare"
+      "blink"
     ],
     [
       2100,
       2400,
-      "stare"
+      "blink"
     ],
     [
       2400,
       2700,
-      "blink"
+      "movement"
     ],
     [
       2700,
       3000,
-      "blink"
+      "movement"
     ],
     [
       3000,
       3300,
-      "blink"
+      "movement"
     ],
     [
       3300,
       3600,
-      "blink"
+      "movement"
     ],
     [
       3600,
       3900,
-      "blink"
+      "movement"
     ],
     [
       3900,
       4200,
-      "blink"
+      "movement"
     ],
     [
       4200,
       4500,
-      "blink"
+      "movement"
     ],
     [
       4500,
       4800,
-      "blink"
-    ],
-    [
-      4800,
-      5100,
-      "movement"
-    ],
-    [
-      5100,
-      5400,
-      "movement"
-    ],
-    [
-      5400,
-      5700,
-      "movement"
-    ],
-    [
-      5700,
-      6000,
-      "movement"
-    ],
-    [
-      6000,
-      6300,
-      "movement"
-    ],
-    [
-      6300,
-      6600,
-      "movement"
-    ],
-    [
-      6600,
-      6900,
-      "movement"
-    ],
-    [
-      6900,
-      7200,
       "movement"
     ]
   ],
