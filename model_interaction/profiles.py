@@ -3,8 +3,6 @@ import os, json, pickle, shutil
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Tuple, Union
 
-from tensorflow.keras.models import load_model as tf_load_model
-
 INDEX_FILE = "profiles_index.json"   # file { "nome": "profiles/nome", ... }
 DEFAULT_ROOT = "profile_store"            # cartella dove creare i profili
 
@@ -83,34 +81,48 @@ def save_profile(
     register_profile(name, dir_path)
     return dir_path
 
-def load_profile(profile: Union[str, os.PathLike]):
-    """
-    Carica (model, scaler, meta) da:
-      - nome profilo registrato nell'indice, oppure
-      - percorso cartella profilo (contente model.keras/meta.json/scaler.pkl?).
-    """
-    # risolvi nome → cartella (se necessario)
-    profile = str(profile)
-    dir_path = profile if os.path.isdir(profile) else get_profile_path(profile)
-    if not dir_path:
-        raise FileNotFoundError(f"Profilo '{profile}' non trovato (né cartella, né nel {INDEX_FILE}).")
+def load_profile(profile_dir: str):
+    model_path  = os.path.join(profile_dir, "model.h5")
+    meta_path   = os.path.join(profile_dir, "meta.json")
+    meta_class  = os.path.join(profile_dir, "meta_classic.json")
+    scaler_path = os.path.join(profile_dir, "scaler.pkl")
 
-    model_path = os.path.join(dir_path, "model.keras")
-    meta_path  = os.path.join(dir_path, "meta.json")
-    scaler_path= os.path.join(dir_path, "scaler.pkl")
+    # --- PROFILO CLASSICO (SVM/RF): niente TensorFlow ---
+    if os.path.exists(meta_class):
+        with open(meta_class, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        scaler = None
+        if os.path.exists(scaler_path):
+            import pickle
+            with open(scaler_path, "rb") as f:
+                scaler = pickle.load(f)
+        model = None   # non usato: inference.py usa classic_predict_window() quando trova meta_classic.json
+        return model, scaler, meta
 
+    # --- PROFILO DL (Keras): importa TF solo qui ---
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Manca {model_path}")
     if not os.path.exists(meta_path):
         raise FileNotFoundError(f"Manca {meta_path}")
 
-    model  = tf_load_model(model_path, compile=False)
+    model = _load_tf_model(model_path)
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
     scaler = None
     if os.path.exists(scaler_path):
+        import pickle
         with open(scaler_path, "rb") as f:
             scaler = pickle.load(f)
 
     return model, scaler, meta
+
+def _load_tf_model(path: str):
+    try:
+        from tensorflow.keras.models import load_model as tf_load_model
+    except ModuleNotFoundError:
+        raise RuntimeError(
+            "Questo profilo richiede TensorFlow, ma non è installato. "
+            "Usa un profilo 'classic' (meta_classic.json) oppure installa tensorflow nel venv."
+        )
+    return tf_load_model(path, compile=False)
