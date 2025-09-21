@@ -20,6 +20,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
  && python -m pip install -r requirements.txt -v
 
 COPY . /app
+COPY ./src /app/src
 
 ENV EEG_UDP_TARGET=127.0.0.1:9999
 
