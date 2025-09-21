@@ -28,4 +28,4 @@ RUN useradd -m app && chown -R app:app /app
 USER app
 
 ENTRYPOINT ["/usr/bin/tini","--"]
-CMD ["python","/src/main.py"]
+CMD ["python3.11","/src/main.py"]
