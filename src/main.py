@@ -28,9 +28,15 @@ def _ask_float(prompt: str, default: float) -> float:
     s = _ask(prompt, str(default)).replace(",", ".")
     try: return float(s)
     except ValueError: return float(default)
+    
+def _ask_int(prompt: str, default: int) -> int:
+    s = _ask(prompt, str(default)).strip()
+    try: return int(s)
+    except ValueError: return int(default)
 
 def _configure_mapping(profile_dir: str, classes: list, default_path: str | None = None) -> str:
-    """Wizard iniziale: salva labels_to_commands.json (per profilo) e ritorna il path."""
+    """Wizard: salva labels_to_commands.json per il profilo e ritorna il path.
+       Per ogni label puoi associare 0..N comandi. Se N>1, verranno alternati."""
     path = default_path or os.path.join(profile_dir, "labels_to_commands.json")
     print(f"\n[*] Configurazione movimenti per il profilo: {profile_dir}")
     print("    Classi:", classes)
@@ -41,33 +47,49 @@ def _configure_mapping(profile_dir: str, classes: list, default_path: str | None
             print(f"[cfg] Uso mapping esistente: {path}\n")
             return path
 
-    mapping = {}
-    print("Inserisci per ciascuna classe uno tra: STOP / MOVE / TURN / CUSTOM.")
-    for lab in classes:
-        t = _ask(f"Comando per '{lab}'", "STOP").strip().upper()
+    def _ask_cmd_entry():
+        t = _ask("  Tipo comando (STOP/MOVE/TURN/CUSTOM)", "STOP").strip().upper()
         params = {}
         if t == "MOVE":
-            vx = _ask_float("  vx (m/s)", 0.25)
-            vy = _ask_float("  vy (m/s)", 0.0)
-            wz = _ask_float("  wz (rad/s)", 0.0)
+            vx = _ask_float("    vx (m/s)", 0.25)
+            vy = _ask_float("    vy (m/s)", 0.0)
+            wz = _ask_float("    wz (rad/s)", 0.0)
             params = {"vx": vx}
             if abs(vy) > 0: params["vy"] = vy
             if abs(wz) > 0: params["wz"] = wz
         elif t == "TURN":
-            wz = _ask_float("  wz (rad/s)", 0.8)
+            wz = _ask_float("    wz (rad/s)", 0.8)
             params = {"wz": wz}
         elif t == "CUSTOM":
-            raw = _ask("  params JSON (opzionale)", "{}")
+            raw = _ask("    params JSON (opzionale)", "{}")
             try: params = json.loads(raw) if raw.strip() else {}
             except json.JSONDecodeError:
-                print("  [warn] JSON non valido, uso {}"); params = {}
+                print("    [warn] JSON non valido, uso {}"); params = {}
         else:
             t, params = "STOP", {}
 
-        tgt = _ask("  target robot-id (vuoto=default/broadcast)", "").strip()
+        tgt = _ask("    target robot-id (vuoto=default/broadcast)", "").strip()
         entry = {"name": t, "params": params}
         if tgt: entry["target"] = tgt
-        mapping[lab] = entry
+        return entry
+
+    print("\nPer ogni classe indica QUANTI comandi associare:")
+    print("  0 = nessuna azione (label ignorata)")
+    print("  1 = singolo comando")
+    print("  N>=2 = alterna i N comandi in round-robin\n")
+
+    mapping: dict = {}
+    for lab in classes:
+        n = _ask_int(f"Quanti comandi associare a '{lab}'? (0..8)", 1)
+        n = max(0, min(n, 8))
+        if n == 0:
+            # Non aggiungo la chiave -> label ignorata
+            continue
+        entries = []
+        for i in range(1, n+1):
+            print(f"  [{lab}] Configura cmd{i}:")
+            entries.append(_ask_cmd_entry())
+        mapping[lab] = entries[0] if len(entries) == 1 else entries
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
