@@ -6,6 +6,5 @@ class UDPClient:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def send(self, cmd):
-        # cmd: RobotCommand(name, params, target)
         payload = {"name": cmd.name, "params": cmd.params, "target": cmd.target}
         self.sock.sendto(json.dumps(payload).encode("utf-8"), self.addr)

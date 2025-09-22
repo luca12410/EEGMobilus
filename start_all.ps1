@@ -53,7 +53,7 @@ $br = @(
   "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp",
   "export CMDVEL_TOPIC='$topic'",
   "cd '$projWsl'",
-  "python3 udp_to_ros2_cmdvel.py"
+  "python3 ./src/external_src/udp_to_ros2_cmdvel.py"
 ) -join " && "
 Start-WSLWindow "Bridge UDP→ROS2" $br
 
@@ -74,6 +74,6 @@ $ps = @(
   "`$env:EEG_UDP_TARGET = '${wslIp}:$port'",
   "Write-Host '[app] EEG_UDP_TARGET=' `$env:EEG_UDP_TARGET",
   "if (Test-Path .\.venv-win\Scripts\Activate.ps1) { . .\.venv-win\Scripts\Activate.ps1 }",
-  "python3.11 .\main.py"
+  "python3.11 .\src\main.py"
 ) -join "; "
 Start-PSWindow "EEG App (Windows)" $ps

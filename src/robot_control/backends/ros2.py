@@ -39,4 +39,3 @@ class ROS2CmdVelClient:
             self._node.send_twist(float(p.get("vx",0.0)), float(p.get("vy",0.0)), float(p.get("wz",0.0)))
         elif n == "TURN":
             self._node.send_twist(0.0, 0.0, float(p.get("wz",0.0)))
-        # else: ignora/custom

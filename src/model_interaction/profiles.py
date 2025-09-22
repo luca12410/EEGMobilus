@@ -1,10 +1,9 @@
-# profiles.py  — Keras/TensorFlow
 import os, json, pickle, shutil
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Tuple, Union
 
-INDEX_FILE = "profiles_index.json"   # file { "nome": "profiles/nome", ... }
-DEFAULT_ROOT = "profile_store"            # cartella dove creare i profili
+INDEX_FILE = "profiles_index.json"   
+DEFAULT_ROOT = "profile_store"          
 
 # ---------- Meta ----------
 @dataclass
@@ -12,10 +11,10 @@ class ProfileMeta:
     fs: int
     chans: int
     samples: int
-    classes: list            # es. ["left","right"] (ordine = output)
-    band: Tuple[int,int]     # es. (8,30)
-    notch: float             # es. 50.0
-    notes: str = ""          # opzionale
+    classes: list          
+    band: Tuple[int,int]   
+    notch: float          
+    notes: str = ""      
 
 # ---------- Index helpers ----------
 def _load_index() -> Dict[str,str]:
@@ -49,35 +48,30 @@ def remove_profile(name: str, delete_files: bool = False) -> None:
 # ---------- Save / Load ----------
 def save_profile(
     name: str,
-    model,                            # keras.Model già compilato o no
+    model,                          
     meta: ProfileMeta,
-    scaler: Optional[object] = None,  # es. dict con mean/var per canale
+    scaler: Optional[object] = None,  
     root: str = DEFAULT_ROOT,
     overwrite: bool = True,
 ) -> str:
     """
-    Salva: model.keras, meta.json, scaler.pkl in profiles/<name>/  e aggiorna l'indice.
-    Ritorna il percorso del profilo.
+    Save: model (Keras), meta (ProfileMeta), optional scaler (e.g. StandardScaler)
     """
     dir_path = os.path.join(root, name)
     os.makedirs(dir_path, exist_ok=True)
 
-    # modello (architettura + pesi)
     model_path = os.path.join(dir_path, "model.keras")
     if os.path.exists(model_path) and not overwrite:
-        raise FileExistsError(f"{model_path} esiste già. Imposta overwrite=True o cambia nome profilo.")
+        raise FileExistsError(f"{model_path} already exists. Use overwrite=True to replace.")
     model.save(model_path)
 
-    # meta
     with open(os.path.join(dir_path, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(meta), f, indent=2)
 
-    # scaler opzionale
     if scaler is not None:
         with open(os.path.join(dir_path, "scaler.pkl"), "wb") as f:
             pickle.dump(scaler, f)
 
-    # indice
     register_profile(name, dir_path)
     return dir_path
 
@@ -87,7 +81,7 @@ def load_profile(profile_dir: str):
     meta_class  = os.path.join(profile_dir, "meta_classic.json")
     scaler_path = os.path.join(profile_dir, "scaler.pkl")
 
-    # --- PROFILO CLASSICO (SVM/RF): niente TensorFlow ---
+    # SVM + RF
     if os.path.exists(meta_class):
         with open(meta_class, "r", encoding="utf-8") as f:
             meta = json.load(f)
@@ -96,10 +90,10 @@ def load_profile(profile_dir: str):
             import pickle
             with open(scaler_path, "rb") as f:
                 scaler = pickle.load(f)
-        model = None   # non usato: inference.py usa classic_predict_window() quando trova meta_classic.json
+        model = None  
         return model, scaler, meta
 
-    # --- PROFILO DL (Keras): importa TF solo qui ---
+    # --- DL PROFILE ---
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Manca {model_path}")
     if not os.path.exists(meta_path):
@@ -122,7 +116,7 @@ def _load_tf_model(path: str):
         from tensorflow.keras.models import load_model as tf_load_model
     except ModuleNotFoundError:
         raise RuntimeError(
-            "Questo profilo richiede TensorFlow, ma non è installato. "
-            "Usa un profilo 'classic' (meta_classic.json) oppure installa tensorflow nel venv."
+            "This profile requires TensorFlow but it is not installed. "
+            "Use a classic profile or install TensorFlow."
         )
     return tf_load_model(path, compile=False)

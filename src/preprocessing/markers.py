@@ -7,8 +7,8 @@ import numpy as np
 
 @dataclass
 class Marker:
-    t_ms: float         # onset in millisecondi (relativi all'inizio registrazione)
-    label: str          # es. "left", "right"
+    t_ms: float        
+    label: str         
 
 class MarkerStream:
     def __init__(self, fs: int):
@@ -22,24 +22,24 @@ class MarkerStream:
     def add_sample(self, t_sample: int, label: str) -> None:
         self.add_ms(self.samples_to_ms(t_sample), label)
 
-    # --- convertitori ---
+    # --- converters ---
     def ms_to_samples(self, t_ms: float) -> int:
         return int(round(t_ms * self.fs / 1000.0))
 
     def samples_to_ms(self, t_samples: int) -> float:
         return (t_samples * 1000.0) / self.fs
 
-    # --- accesso ---
+    # --- access ---
     def markers(self) -> List[Marker]:
         return list(self._markers)
 
-    # --- estrai trial attorno ai marker ---
+    # --- extract trials ---
     def trials(self,
                window_sec: Tuple[float, float] = (0.5, 3.5),
                labels_whitelist: Optional[List[str]] = None) -> List[Tuple[int, int, str]]:
         """
-        Ritorna (start_sample, end_sample, label) per ogni marker.
-        window_sec = (pre, post) rispetto all'onset (secondi).
+        Returns list of (start_sample, end_sample, label) for each marker.
+        window_sec: (pre, post) in seconds relative to marker time.
         """
         pre_s, post_s = window_sec
         trials = []
@@ -67,23 +67,23 @@ class MarkerStream:
             ms.add_ms(m["t_ms"], m["label"])
         return ms
 
-    # --- parsing da colonne digitali (0/1) ---
+    # --- parsing from digital columns (0/1) ---
     @staticmethod
     def from_digital_columns(fs: int,
-                             digital_matrix,                     # ndarray [cols, T] o [T, cols]
+                             digital_matrix,                    
                              col_map: Dict[str, int],
                              label_map: Dict[str, str],
                              rising: bool = True,
                              min_separation_ms: float = 250.0) -> "MarkerStream":
         """
-        Estrae marker da colonne digitali (es. O1/O2). Usa edge detection.
+        Extract markers from digital columns (0/1) matrix.
+        Params:
         - col_map: {'O1': idx, 'O2': idx}
         - label_map: {'O1': 'left', 'O2': 'right'}
         """
         X = np.asarray(digital_matrix)
         if X.ndim != 2:
-            raise ValueError("digital_matrix deve essere 2D")
-        # normalizza shape a [cols, T]
+            raise ValueError("digital_matrix must be 2D")
         if X.shape[0] < X.shape[1] and max(col_map.values()) < X.shape[1]:
             X = X.T
 
@@ -102,26 +102,26 @@ class MarkerStream:
         return ms
 
 
-# -------- Helper per file OpenSignals (.txt) --------
+# -------- Helper for OpenSignals file. --------
 def read_opensignals_digital(path: str, wanted: list[str]):
     """
-    Estrae colonne digitali per nome da un .txt OpenSignals.
-    Ritorna: (digital_matrix [cols, T], col_map: dict name->idx, fs: int)
+    Extracts digital columns from OpenSignals .txt file.
+    Returns: digital_matrix [cols, T], col_map {name: idx}, fs
     """
     import json
     import numpy as np
 
-    # --- leggi header con readline() (no for ... in f) ---
+    # --- HEADER READ ---
     header_lines = []
     data_start_pos = 0
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         while True:
-            pos = f.tell()            # posizione PRIMA della riga
+            pos = f.tell()            
             line = f.readline()
-            if not line:              # EOF
+            if not line:              
                 break
             if not line.startswith("#"):
-                data_start_pos = pos  # inizio dei dati
+                data_start_pos = pos  
                 break
             header_lines.append(line.rstrip("\n"))
 
@@ -147,17 +147,14 @@ def read_opensignals_digital(path: str, wanted: list[str]):
         raise KeyError(f"Colonne richieste non trovate nel file: {missing}. "
                        f"Presenti: {list(name_to_idx.keys())}") from e
 
-    # --- carica solo la parte dati, partendo da data_start_pos ---
+    # --- LOAD DATA ---
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         f.seek(data_start_pos)
-        # genfromtxt è più tollerante a righe irregolari di loadtxt
         data = np.genfromtxt(f, delimiter="\t", dtype=np.float32, autostrip=True)
 
     if data.ndim == 1:
         data = data[None, :]
 
-    # Estrai colonne richieste e trasponi a [cols, T]
-    # (le colonne digitali O1/O2 sono 0/1 o valori piccoli)
     digital = data[:, idxs].T
     col_map = {n: i for i, n in enumerate(wanted)}
     return digital, col_map, fs

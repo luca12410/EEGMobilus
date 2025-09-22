@@ -23,8 +23,8 @@ class UdpCmdVelBridge(Node):
 
         self.n_rx = 0
         self.n_pub = 0
-        self.create_timer(0.01, self.loop)                  # RX UDP
-        self.create_timer(1.0, self._heartbeat)             # annuncio/ping
+        self.create_timer(0.01, self.loop)              
+        self.create_timer(1.0, self._heartbeat)          
         self.create_timer(1.0, self._stats)
 
     def _heartbeat(self):

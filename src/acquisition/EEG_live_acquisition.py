@@ -12,10 +12,13 @@ log = logging.getLogger(__name__)
 
 class EEGLiveAcquisition(Acquisition):
     """
-    Sorgente EEG live da BITalino (pull-based + thread producer).
-    - start() / stop()
-    - read_block(n) -> np.ndarray [C, n]
-    - stream(hop) -> generator di blocchi [C, hop]
+    Acquisition from BITalino device.
+    Wraps BITalino Python API in a thread + queue to provide non-blocking read_block(n).
+    Usage:
+        with EEGLiveAcquisition(mac_address="XX:XX:XX:XX:XX:XX", sampling_rate=100, channels=[3]) as src:
+            block = src.read_block(250)  # read 250 samples (2.5s at 100Hz)
+            for chunk in src.stream(hop=50):  # generator of 50-sample chunks
+                process(chunk)
     """
     def __init__(self, mac_address: str, sampling_rate: int = 500,
                  channels = [0,1,2], buffer_size: int = 250,
@@ -33,9 +36,10 @@ class EEGLiveAcquisition(Acquisition):
 
     # --- lifecycle ---
     def connect(self):
+        logging.info("[INFO] Connecting to BITalino @ %s ...", self.mac)
         self.dev = BITalino(self.mac)
         self.dev.start(self.fs, self.channels)
-        logging.info("BITalino connected @ %d Hz (channels=%s)", self.fs, self.channels)
+        logging.info("[INFO] BITalino connected @ %d Hz (channels=%s)", self.fs, self.channels)
 
 
     # --- start lifecycle ---
@@ -46,7 +50,7 @@ class EEGLiveAcquisition(Acquisition):
         self._th = threading.Thread(target=self._producer, daemon=True)
         self._th.start()
 
-    # --- context manager (comodo nei test/usage) ---
+    # --- context manager  ---
     def __enter__(self):
         self.connect()
         self.start()
@@ -65,7 +69,7 @@ class EEGLiveAcquisition(Acquisition):
                 if frames.ndim != 2 or frames.shape[1] < len(self.channels):
                     logging.warning("Unexpected frame shape: %s", frames.shape)
                     continue
-                A = frames[:, -len(self.channels):].T.astype(np.float32) * self.vpc  # [C,n]
+                A = frames[:, -len(self.channels):].T.astype(np.float32) * self.vpc 
                 if self.q.full():
                     try: self.q.get_nowait()
                     except Empty: pass
@@ -77,7 +81,7 @@ class EEGLiveAcquisition(Acquisition):
     def stop(self):
         self._stop.set()
         if self._th: self._th.join(timeout=1.0); self._th = None
-        # flush queue
+  
         while not self.q.empty():
             try: self.q.get_nowait()
             except Empty: break
@@ -160,5 +164,4 @@ class LiveSource:
         yield from self._live.stream(hop, timeout=timeout)
 
     def __del__(self):
-        # opzionale: non chiudiamo aggressivamente per riuso
         pass

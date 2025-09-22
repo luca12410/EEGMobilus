@@ -1,4 +1,3 @@
-# control/controller.py
 import json, os
 from typing import Optional
 from collections import defaultdict
@@ -8,11 +7,10 @@ from robot_control.decision import DecisionSmoother
 from robot_control.commands import RobotCommand
 from robot_control.router import RobotRouter
 
-# round-robin per alternanza per label
+# round-robin per label (avanza SOLO sugli edge mappati)
 _RR = defaultdict(int)
 
 def _load_mapping(mapping_path: Optional[str], profile_dir: Optional[str]) -> dict:
-    # 1) mapping esplicito; 2) mapping nel profilo; 3) fallback vuoto (skip)
     for p in [mapping_path,
               os.path.join(profile_dir, "labels_to_commands.json") if profile_dir else None]:
         if p and os.path.isfile(p):
@@ -20,39 +18,43 @@ def _load_mapping(mapping_path: Optional[str], profile_dir: Optional[str]) -> di
                 return json.load(f)
     return {}
 
-def _label_to_cmd(label: str, mapping: dict) -> Optional[RobotCommand]:
-    """
-    mapping[label] può essere:
-      - None/assente  -> skip
-      - dict          -> singolo comando
-      - list[dict...] -> alterna tra i comandi
-    """
+def _is_mapped(label: str, mapping: dict) -> bool:
     if not mapping:
-        return None
+        return False
+    spec = mapping.get(label, None)
+    if spec is None:
+        return False
+    if isinstance(spec, list):
+        return len(spec) > 0
+    if isinstance(spec, dict):
+        return True
+    return False
 
+def _pick_cmd_on_edge(label: str, mapping: dict) -> Optional[RobotCommand]:
+    """
+    Chiamare SOLO sugli 'edge' mappati:
+      - dict       -> singolo comando
+      - list[dict] -> round-robin (avanza di 1 per questa label)
+    """
     spec = mapping.get(label, None)
     if spec is None:
         return None
 
-    # Lista -> alternanza round-robin
-    if isinstance(spec, list):
-        if not spec:
-            return None
-        i = _RR[label] % len(spec)
-        _RR[label] += 1
-        entry = spec[i]
-        if not isinstance(entry, dict):
-            return None
-        name   = entry.get("name", "STOP")
-        params = entry.get("params", {}) or {}
-        target = entry.get("target")
-        return RobotCommand(name=name, params=params, target=target)
-
-    # Singolo comando
     if isinstance(spec, dict):
         name   = spec.get("name", "STOP")
         params = spec.get("params", {}) or {}
         target = spec.get("target")
+        return RobotCommand(name=name, params=params, target=target)
+
+    if isinstance(spec, list) and len(spec) > 0:
+        i = _RR[label] % len(spec)
+        _RR[label] += 1
+        entry = spec[i] if isinstance(spec[i], dict) else None
+        if entry is None:
+            return None
+        name   = entry.get("name", "STOP")
+        params = entry.get("params", {}) or {}
+        target = entry.get("target")
         return RobotCommand(name=name, params=params, target=target)
 
     return None
@@ -63,24 +65,57 @@ def run_controller(bus, classes, router: RobotRouter,
                    profile_dir: Optional[str] = None,
                    win:int=3, thr:float=0.6, refractory_ms:int=200):
     """
-    SINGLE ENTRYPOINT: consuma eventi, smoother → label → mapping → router.
+    Consuma eventi → smoother → label.
+    POLICY:
+      - Se arriva una label MAPPATA e siamo su edge (prev non mappata o label diversa):
+          scegli il comando (RR se lista) e diventa 'active_cmd'.
+      - Se arriva label NON mappata:
+          continua a pubblicare 'active_cmd' (hold).
+      - Ad ogni tick:
+          se esiste 'active_cmd' → pubblicalo (keep-alive continuo).
     """
     mapping = _load_mapping(mapping_path, profile_dir)
     smoother = DecisionSmoother(win=win, thr=thr, refractory_ms=refractory_ms)
 
+    active_cmd: Optional[RobotCommand] = None          # comando da pubblicare continuamente
+    last_seen_mapped_label: Optional[str] = None       # ultima label MAPPATA osservata
+    prev_is_mapped: bool = False                       # stato precedente (mappata vs no)
+
     while True:
         ev = bus.get()  # blocca finché arriva un evento
         idx = smoother.step(ev.probs, ev.t_ms)
-        # DEBUG:
-        print(f"[ctrl] event t={ev.t_ms:.1f} ms | probs={np.round(ev.probs,3)}")
-        if idx is None:
-            continue
+        print(f"[CONTROL] event t={ev.t_ms:.1f} ms | probs={np.round(ev.probs,3)}")
 
-        label = classes[idx]
-        cmd = _label_to_cmd(label, mapping)
-        if cmd is None:
-            print(f"[ctrl] label '{label}' NON mappata -> skip")
-            continue
+        if idx is not None:
+            label = classes[idx]
+            curr_is_mapped = _is_mapped(label, mapping)
 
-        print(f"[ctrl] decision label={label} -> {cmd.name} {cmd.params}")
-        router.dispatch(cmd, default_robot=default_robot)
+            # EDGE se: (a) ora mappata e prima non mappata, oppure (b) ora mappata e label diversa dall'ultima mappata
+            is_edge = curr_is_mapped and (not prev_is_mapped or label != last_seen_mapped_label)
+
+            if is_edge:
+                new_cmd = _pick_cmd_on_edge(label, mapping)
+                if new_cmd is not None:
+                    active_cmd = new_cmd
+                    last_seen_mapped_label = label
+                    print(f"[CONTROL] EDGE MAPPED label=[{label}] -> [{active_cmd.name} {active_cmd.params}]")
+                else:
+                    # mapping invalido: mantieni il comando precedente
+                    print(f"[CONTROL] EDGE label=[{label}] mapping invalid -> [HOLD last]")
+            else:
+                # nessun edge:
+                if curr_is_mapped:
+                    # stessa label mappata di prima → niente RR, tieni active_cmd
+                    print(f"[CONTROL] HOLD mapped label=[{label}] -> keep [{active_cmd.name if active_cmd else 'None'}]")
+                else:
+                    # label non mappata → mantieni active_cmd
+                    print(f"[CONTROL] HOLD unmapped label=[{label}] -> keep [{active_cmd.name if active_cmd else 'None'}]")
+
+            prev_is_mapped = curr_is_mapped
+        else:
+            # nessuna decisione dal smoother → continua a pubblicare se hai un comando attivo
+            print(f"[CONTROL] no label -> keep [{active_cmd.name if active_cmd else 'None'}]")
+
+        # PUBBLICAZIONE CONTINUA dell'ultimo comando valido
+        if active_cmd is not None:
+            router.dispatch(active_cmd, default_robot=default_robot)

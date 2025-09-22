@@ -7,23 +7,23 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format='[%(l
 log = logging.getLogger(__name__)
 
 def bandpass_filter(data: np.ndarray, fs: int, low: float=1.0, high: float=40.0, order: int=5):
-    """Filtro passa-banda canale per canale [C, N]."""
+    """Bandpass filter"""
     nyq = 0.5 * fs
     b, a = butter(order, [low/nyq, high/nyq], btype='band')
     return lfilter(b, a, data, axis=1)
 
 def notch_filter(data: np.ndarray, fs: int, freq: float=50.0, Q: float=30.0):
-    """Notch a 50 Hz per rumore di rete."""
+    """Simple notch filter."""
     from scipy.signal import iirnotch
     b, a = iirnotch(freq/(fs/2), Q)
     return lfilter(b, a, data, axis=1)
 
 def normalize(data: np.ndarray):
-    """Zero mean, unit variance per canale."""
+    """Zero mean."""
     return (data - data.mean(axis=1, keepdims=True)) / (data.std(axis=1, keepdims=True) + 1e-8)
 
 def preprocess_pipeline(X: np.ndarray, fs: int):
-    """Composizione base."""
+    """Base pipeline of the process."""
     X = bandpass_filter(X, fs)
     X = notch_filter(X, fs)
     X = normalize(X)
@@ -31,20 +31,18 @@ def preprocess_pipeline(X: np.ndarray, fs: int):
 
 def prepare_for_model(X: np.ndarray, fs: int, chans: int, samples: int):
     """
-    Preprocessing + reshape per EEGModels.py
-    Input:  X [C, N] blocco (C=canali, N=campioni)
-    Output: X_ready [1, C, Samples, 1] per Keras EEGNet
+    Preprocessing + reshape for EEGModels.py
+    Input:  X [C, N] block (C=channels, N=samples)
+    Output: X_ready [1, C, Samples, 1] for Keras EEGNet
     """
     X = preprocess_pipeline(X, fs)
     
-    # Assicurati di avere esattamente la finestra richiesta dal modello
     if X.shape[1] > samples:
         X = X[:, :samples]
     elif X.shape[1] < samples:
         pad = samples - X.shape[1]
         X = np.pad(X, ((0,0),(0,pad)), mode='constant')
     
-    # aggiungi batch e canale conv2D
-    X = np.expand_dims(X, axis=0)   # -> (1, C, Samples)
-    X = np.expand_dims(X, axis=-1)  # -> (1, C, Samples, 1)
+    X = np.expand_dims(X, axis=0)  
+    X = np.expand_dims(X, axis=-1)  
     return X

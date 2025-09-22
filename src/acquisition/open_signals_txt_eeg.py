@@ -5,17 +5,17 @@ from .acquisition import Acquisition
 
 class OpenSignalsTxtEEG(Acquisition):
     """
-    Loader/streamer per file OpenSignals .txt
-    Espone: read_block(n) -> [C,n], stream(hop) -> generator [C,hop]
+    Loader for OpenSignals .txt EEG files.
+    Usage:
+        src = OpenSignalsTxtEEG(path="data.txt", channels=["A4"], fs
     """
     def __init__(self, path: str, channels=("A4",), fs: int | None = None, volts_per_count: float = 1.0):
         self.path = path
         self.channels = list(channels)
-        self.fs = fs                      # <- semplice attributo, NESSUNA property
+        self.fs = fs                      
         self.vpc = float(volts_per_count)
 
-        # interni
-        self._X = None                    # [C, T]
+        self._X = None                 
         self._pos = 0
         self._eof = False
 
@@ -32,7 +32,6 @@ class OpenSignalsTxtEEG(Acquisition):
 
         header_lines = []
         data_start_pos = 0
-        # Windows-safe: niente iteratore; readline() + tell()/seek()
         with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
             while True:
                 pos = f.tell()
@@ -50,7 +49,7 @@ class OpenSignalsTxtEEG(Acquisition):
                 header_json = json.loads(h.lstrip()[2:].strip())
                 break
         if not header_json:
-            raise ValueError("Header JSON OpenSignals non trovato")
+            raise ValueError("Header JSON OpenSignals not found")
 
         dev_key = next(iter(header_json))
         meta = header_json[dev_key]
@@ -58,14 +57,12 @@ class OpenSignalsTxtEEG(Acquisition):
         col_names = meta.get("column", [])
         name_to_idx = {name: i for i, name in enumerate(col_names)}
 
-        # mappa canali richiesti
         try:
             idxs = [name_to_idx[n] for n in self.channels]
         except KeyError as e:
             missing = [n for n in self.channels if n not in name_to_idx]
-            raise KeyError(f"Colonne richieste non trovate: {missing}. Presenti: {list(name_to_idx.keys())}") from e
+            raise KeyError(f"Required columns not found: {missing}. Found: {list(name_to_idx.keys())}") from e
 
-        # carica dati
         with open(self.path, "r", encoding="utf-8", errors="ignore") as f:
             f.seek(data_start_pos)
             data = np.genfromtxt(f, delimiter="\t", dtype=np.float32, autostrip=True)
@@ -73,9 +70,8 @@ class OpenSignalsTxtEEG(Acquisition):
         if data.ndim == 1:
             data = data[None, :]
 
-        X = data[:, idxs].T.astype(np.float32) * self.vpc  # [C,T]
+        X = data[:, idxs].T.astype(np.float32) * self.vpc 
 
-        # imposta fs se assente (NOTA: nessuna property, solo attributo)
         if self.fs is None:
             self.fs = fs_file
 
@@ -87,14 +83,13 @@ class OpenSignalsTxtEEG(Acquisition):
     def read_block(self, n: int, timeout: float = 1.0) -> np.ndarray:
         if self._eof:
             from queue import Empty
-            raise Empty  # per compat con run_inference_stream
+            raise Empty  
         end = self._pos + n
         if end >= self._X.shape[1]:
             end = self._X.shape[1]
             self._eof = True
         chunk = self._X[:, self._pos:end]
         self._pos = end
-        # se chunk più corto, pad con ultimi valori (o zeri)
         if chunk.shape[1] < n:
             pad = np.zeros((chunk.shape[0], n - chunk.shape[1]), dtype=chunk.dtype)
             if chunk.shape[1] > 0:

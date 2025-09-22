@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 import numpy as np
 
 class Acquisition(ABC):
-    """Interfaccia sorgenti EEG (live/offline). Convenzione snake_case."""
+    """Interface for EEG sources."""
     # --- lifecycle ---
     def connect(self) -> None: ...
     def start(self) -> None: ...
@@ -14,12 +14,10 @@ class Acquisition(ABC):
     # --- consumer API ---
     @abstractmethod
     def read_block(self, n: int, timeout: float = 1.0) -> np.ndarray:
-        """Blocca finché non restituisce [C, n] o solleva queue.Empty a EOF."""
         raise NotImplementedError
 
     @abstractmethod
     def stream(self, hop: int, timeout: float = 1.0) -> Iterable[np.ndarray]:
-        """Generatore di blocchi [C, hop]."""
         raise NotImplementedError
 
     # --- context manager ---
@@ -28,7 +26,7 @@ class Acquisition(ABC):
     def __exit__(self, exc_type, exc, tb):
         self.stop()
 
-    # --- alias camelCase (compatibilità retro) ---
+    # --- alias camelCase ---
     def readBlock(self, n: int, timeout: float = 1.0) -> np.ndarray:
         return self.read_block(n, timeout=timeout)
     def readStream(self, hop: int, timeout: float = 1.0) -> Iterable[np.ndarray]:

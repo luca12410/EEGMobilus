@@ -1,4 +1,3 @@
-# inference.py
 import time
 import numpy as np
 from collections import deque
@@ -6,7 +5,7 @@ from typing import Callable, Optional
 from preprocessing.windowing import RingBuffer
 
 from model_interaction.profiles import load_profile
-from preprocessing.preprocess import prepare_for_model  # deve fare: preprocess + reshape (1,C,S,1)
+from preprocessing.preprocess import prepare_for_model  
 from model_interaction.base_model.classic import classic_predict_window
 
 import os, logging
@@ -17,11 +16,11 @@ log = logging.getLogger(__name__)
 
 class InferenceEngine:
     """
-    Carica il profilo e fornisce predict su una finestra [C, Samples].
+    Load profile and perform inferences on windows of data.
     """
     def __init__(self, profile_dir: str):
         self.model, self.scaler, self.meta = load_profile(profile_dir)
-        self.profile_dir = profile_dir   # <<< AGGIUNTO
+        self.profile_dir = profile_dir   
         for k in ("fs", "chans", "samples", "classes"):
             if k not in self.meta:
                 raise KeyError(f"Missing meta key: {k}")
@@ -61,31 +60,31 @@ class InferenceEngine:
 
 
 # ----------------------------
-# Feeder: blocchi -> finestra -> predict
+# Feeder: blocks -> windows -> predictions
 # ----------------------------
 
 class RingBuffer:
-    """Buffer circolare semplice: mantiene gli ultimi win_samples campioni per C canali."""
+    """Simple ring buffer to accumulate samples and extract windows."""
     def __init__(self, chans: int, win_samples: int):
         self.C, self.N = chans, win_samples
         self.buf = deque(maxlen=win_samples)
 
     def push(self, block: np.ndarray):
-        """Aggiunge un blocco [C, n]."""
+        """Add a block [C, n]."""
         assert block.ndim == 2 and block.shape[0] == self.C, f"Expected [{self.C}, n], got {block.shape}"
         for i in range(block.shape[1]):
             self.buf.append(block[:, i])
 
     def get_window(self) -> Optional[np.ndarray]:
-        """Ritorna [C, N] se pieno, altrimenti None."""
+        """Return a window [C, N] or None if not enough data."""
         if len(self.buf) < self.N:
             return None
-        return np.stack(self.buf, axis=1)  # [C, N]
+        return np.stack(self.buf, axis=1)
 
 
 def run_inference_stream(
-    source,                 # .stream(hop) -> blocchi [C, hop]
-    engine,                 # InferenceEngine
+    source,                 
+    engine,           
     fs: int,
     win_sec: float = 1.0,
     hop_sec: float = 0.5,
@@ -103,25 +102,25 @@ def run_inference_stream(
     rb  = RingBuffer(chans=engine.meta["chans"], win_samples=win)
     t0 = time.time()
     if DEBUG:
-        print(f"[dbg] fs={fs} win={win}({win_sec:.3f}s) hop={hop}({hop_sec:.3f}s) classes={engine.meta.get('classes')}")
+        print(f"[DEBUG] fs={fs} win={win}({win_sec:.3f}s) hop={hop}({hop_sec:.3f}s) classes={engine.meta.get('classes')}")
 
     use_classic = bool(profile_dir) and os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
     if DEBUG and profile_dir:
-        print(f"[dbg] profile_dir={profile_dir} use_classic={use_classic}")
+        print(f"[DEBUG] profile_dir={profile_dir} use_classic={use_classic}")
 
     for block in source.stream(hop):
         if block is None or (hasattr(block, "size") and block.size == 0):
             continue
         if DEBUG:
-            print(f"[dbg] block: {getattr(block,'shape',None)}")
+            print(f"[DEBUG] block: {getattr(block,'shape',None)}")
 
         rb.push(block)
         X_win = rb.get_window()
         if X_win is None:
-            if DEBUG: print("[dbg] waiting window…")
+            if DEBUG: print("[DEBUG] waiting window…")
             continue
         if DEBUG:
-            print(f"[dbg] window ready: {X_win.shape}")
+            print(f"[DEBUG] window ready: {X_win.shape}")
 
         try:
             if use_classic:
@@ -131,7 +130,7 @@ def run_inference_stream(
         except Exception as e:
             if DEBUG:
                 import traceback; traceback.print_exc()
-                print(f"[dbg] predict error: {e}")
+                print(f"[DEBUG] predict error: {e}")
             continue
 
         if on_probs:
@@ -153,12 +152,12 @@ def run_inference_interactive(default_profile_dir: str = "profile_store/latest",
     from acquisition.EEG_live_acquisition import LiveSource
     from robot_control.decision import DecisionSmoother, map_class_to_cmd
 
-    profile_dir = _ask("Path del profilo da usare (directory)", default_profile_dir)
+    profile_dir = _ask("Please specify the path of the profile to be used (directory)", default_profile_dir)
     if not os.path.isdir(profile_dir):
-        print(f"[!] Profilo non trovato: {profile_dir}")
+        print(f"[!] Profile not found: {profile_dir}")
         raise SystemExit(1)
 
-    mode = _ask("Sorgente inferenza (file/live)", default_mode).lower()
+    mode = _ask("Inference source (file/live)", default_mode).lower()
     engine = InferenceEngine(profile_dir)
     smoother = DecisionSmoother(win=3, thr=0.4, refractory_ms=100)
 
@@ -169,20 +168,20 @@ def run_inference_interactive(default_profile_dir: str = "profile_store/latest",
 
     use_classic = bool(profile_dir) and os.path.exists(os.path.join(profile_dir, "meta_classic.json"))
     if DEBUG:
-        print(f"[dbg] use_classic={use_classic}  classes={engine.meta.get('classes')}")
+        print(f"[DEBUG] use_classic={use_classic}  classes={engine.meta.get('classes')}")
     
     def on_probs(p, t_ms):
-        print(f"[raw] {t_ms:8.1f} ms | probs={np.round(p,3)}")
+        print(f"[RAW] {t_ms:8.1f} ms | probs={np.round(p,3)}")
         cls_idx = smoother.step(p, t_ms)
         if cls_idx is not None:
             label = engine.meta["classes"][cls_idx]
             cmd   = map_class_to_cmd(cls_idx, engine.meta["classes"])
-            print(f"[dec] {t_ms:8.1f} ms | label={label} | cmd={cmd}")
+            print(f"[DEC] {t_ms:8.1f} ms | label={label} | cmd={cmd}")
         elif DEBUG:
-            print(f"[dec] {t_ms:8.1f} ms | nessuna classe (sotto soglia)")
+            print(f"[DEC] {t_ms:8.1f} ms | No class (below threshold!)")
 
     if mode.startswith("l"):
-        print("[*] Inferenza LIVE dal dispositivo…")
+        print("[*] !!! STARTED LIVE INFERENCE (press Ctrl-C to stop) !!!")
         src = LiveSource(fs)
         run_inference_stream(
             src, engine,
@@ -192,16 +191,16 @@ def run_inference_interactive(default_profile_dir: str = "profile_store/latest",
             DEBUG=DEBUG
         )
     else:
-        print("[*] Inferenza su FILE OpenSignals (solo analogico, nessun marker)…")
+        print("[*] Inference from OpenSignals file...")
         if not os.path.exists(test_file):
-            print(f"[!] TEST_FILE non trovato: {test_file}")
+            print(f"[!] TEST_FILE not found: {test_file}")
             raise SystemExit(1)
         src = OpenSignalsTxtEEG(test_file, channels=list(analog_channels))
         run_inference_stream(
             src, engine,
             fs=fs, win_sec=win_sec, hop_sec=hop_sec,
             on_probs=on_probs,
-            profile_dir=profile_dir,         # <<< IMPORTANTE
+            profile_dir=profile_dir,        
             DEBUG=DEBUG
         )
-    print("[✓] Inference finita.")
+    print("[✓] INFERENCE COMPLETED.")
