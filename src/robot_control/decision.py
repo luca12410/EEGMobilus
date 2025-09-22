@@ -1,4 +1,3 @@
-# robot_control/decision.py
 import collections, json
 import numpy as np
 from typing import Optional, List, Dict
@@ -16,10 +15,10 @@ class DecisionSmoother:
                  thr: float = 0.55,
                  margin: float = 0.05,
                  min_votes: int = 3,
-                 refractory_ms: int = 250,   # applicato solo ai cambi classe
+                 refractory_ms: int = 250,  
                  hysteresis: float = 0.10,
                  debug: bool = False,
-                 is_mapped=None   # opzionale: callable(idx:int)->bool, default: tutto mappato
+                 is_mapped=None   
                  ):
         import collections
         self.buf = collections.deque(maxlen=int(win))
@@ -87,20 +86,15 @@ class DecisionSmoother:
             if self.debug: print(f"[SMOOTH] HOLD (same) k={self.current_idx} {reason}")
             return self.current_idx
 
-        # 4) candidato diverso: switch solo se
-        #    - è mappato (has command); altrimenti ignora e continua col corrente
         if not self.is_mapped(cand):
             if self.current_idx is not None and self.debug:
                 print(f"[SMOOTH] IGNORE unmapped cand={cand} -> keep k={self.current_idx}")
-            # se non avevamo ancora nulla (startup) e il primo è unmapped, non emettere nulla
             return self.current_idx
 
-        #    - rispetta refrattario solo per lo switch
         if (now_ms - self.last_switch_ms) < self.refractory_ms:
             if self.debug: print("[SMOOTH] refractory (switch)")
             return self.current_idx
 
-        # OK: effettua switch
         self.current_idx = cand
         self.last_switch_ms = now_ms
         if self.debug: print(f"[SMOOTH] SWITCH→ k={cand} {reason}")

@@ -7,16 +7,41 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO, format='[%(l
 log = logging.getLogger(__name__)
 
 def bandpass_filter(data: np.ndarray, fs: int, low: float=1.0, high: float=40.0, order: int=5):
-    """Bandpass filter"""
+    """Bandpass con guard-rails: clamp automatico in base a fs; se non realizzabile, salta."""
     nyq = 0.5 * fs
-    b, a = butter(order, [low/nyq, high/nyq], btype='band')
-    return lfilter(b, a, data, axis=1)
+    # clamp bordi in Hz
+    lo_hz = max(0.01, float(low))              # >= 0.01 Hz
+    hi_hz = min(float(high), 0.95 * nyq)       # < Nyquist
+    if hi_hz <= lo_hz or hi_hz <= 0.0 or lo_hz >= nyq:
+        log.warning(f"[pre] skip bandpass: fs={fs}Hz, requested [{low},{high}]Hz → invalid after clamp [{lo_hz:.3f},{hi_hz:.3f}]Hz")
+        return data
+
+    Wn = [lo_hz/nyq, hi_hz/nyq]               # 0< Wn <1
+    try:
+        b, a = butter(int(order), Wn, btype='band')
+        return lfilter(b, a, data, axis=1)
+    except Exception as e:
+        log.warning(f"[pre] bandpass failed ({e}); returning unfiltered")
+        return data
+
 
 def notch_filter(data: np.ndarray, fs: int, freq: float=50.0, Q: float=30.0):
-    """Simple notch filter."""
+    """Notch con guard-rails: disattiva se freq >= Nyquist o non valida."""
     from scipy.signal import iirnotch
-    b, a = iirnotch(freq/(fs/2), Q)
-    return lfilter(b, a, data, axis=1)
+    nyq = 0.5 * fs
+    if freq is None:
+        return data
+    f0 = float(freq)
+    if f0 <= 0.0 or f0 >= 0.95 * nyq:
+        log.warning(f"[pre] skip notch: fs={fs}Hz, requested f0={freq}Hz (Nyq={nyq}Hz)")
+        return data
+    try:
+        w0 = f0 / nyq                          # normalizzato (0..1)
+        b, a = iirnotch(w0, float(Q))
+        return lfilter(b, a, data, axis=1)
+    except Exception as e:
+        log.warning(f"[pre] notch failed ({e}); returning unfiltered")
+        return data
 
 def normalize(data: np.ndarray):
     """Zero mean."""
